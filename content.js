@@ -15,7 +15,26 @@ let timeoutId = null;
 // ==========================================
 function isPreviewPage() {
   const url = window.location.href;
-  return url.includes('/file/d/') && (url.includes('/view') || url.includes('/edit') || url.match(/\/file\/d\/[a-zA-Z0-9_-]+$/));
+  const isPreviewUrl = url.includes('/file/d/') && (url.includes('/view') || url.includes('/edit') || url.match(/\/file\/d\/[a-zA-Z0-9_-]+$/));
+
+  const isPreviewDomPresent = !!document.querySelector('div.a-b-r') ||
+    !!document.querySelector('body > div.YM5U3.dif24c.vhoiae.LgGVmb.bvmRsc.YLZndc.XHt2ke.a-b-uoC0bf.a-b-L.a-b-ja-el-db.cwJVQd > span > span > div.xWSG7 > div.gDCm5 > div > div > div.rWIAq');
+
+  return isPreviewUrl || isPreviewDomPresent;
+}
+
+function isDrivePage() {
+  const url = window.location.href;
+  return url.includes('drive.google.com/drive') || url.includes('drive.google.com/file');
+}
+
+function restartObserver() {
+  if (!isDrivePage()) return;
+  if (document.getElementById('md-toggle-button')) return;
+
+  console.log("Drive Markdown Viewer: Restarting observer due to user interaction.");
+  cleanupObserver();
+  startObserver();
 }
 
 function checkUrlChange() {
@@ -23,19 +42,20 @@ function checkUrlChange() {
   if (url !== currentUrl) {
     console.log("Drive Markdown Viewer: URL changed from", currentUrl, "to", url);
     currentUrl = url;
-    
+
     // Deactivate/cleanup any active viewers from previous pages
-    if (isMarkdownActive) {
+    hardCleanup();
+
+    // Start observer for new page context
+    restartObserver();
+  }
+
+  // Periodic check if preview was closed (if isMarkdownActive but no viewer content exists)
+  if (isMarkdownActive) {
+    const contentArea = findContentArea();
+    if (!contentArea && !overlayViewerElement) {
+      console.log("Drive Markdown Viewer: Viewer closed, cleaning up states.");
       restoreOriginalView();
-    } else {
-      // Direct hard cleanup to be safe
-      hardCleanup();
-    }
-    
-    cleanupObserver();
-    
-    if (isPreviewPage()) {
-      startObserver();
     }
   }
 }
@@ -44,7 +64,7 @@ function hardCleanup() {
   isButtonInjected = false;
   isMarkdownActive = false;
   originalChildrenStates = [];
-  
+
   if (inlineViewerElement) {
     inlineViewerElement.remove();
     inlineViewerElement = null;
@@ -53,12 +73,12 @@ function hardCleanup() {
     overlayViewerElement.remove();
     overlayViewerElement = null;
   }
-  
+
   const existingBtn = document.getElementById('md-toggle-button');
   if (existingBtn) {
     existingBtn.remove();
   }
-  
+
   document.removeEventListener('keydown', handleOverlayEsc);
 }
 
@@ -66,17 +86,21 @@ function hardCleanup() {
 // DOM Selectors for Toolbar & Scraping
 // ==========================================
 function findToolbar() {
+  // Custom target selector for folder pages
+  const customTarget = document.querySelector("div.rWIAq");
+  if (customTarget) return customTarget;
+
   // Selector Priority 1: Parent or sibling of "Open with" / "アプリで開く" / "開く"
   const openWithBtn = document.querySelector('[data-tooltip*="開く"], [data-tooltip*="Open with"], [data-tooltip*="アプリで開く"], [aria-label*="開く"], [aria-label*="Open with"]');
   if (openWithBtn) {
     const parent = openWithBtn.parentElement;
     if (parent) return parent;
   }
-  
+
   // Selector Priority 2: Toolbar role elements
   const toolbar = document.querySelector('[role="toolbar"]');
   if (toolbar) return toolbar;
-  
+
   // Header / Banner right side elements
   const header = document.querySelector('header');
   if (header) {
@@ -84,7 +108,7 @@ function findToolbar() {
     if (rightButtons) return rightButtons;
     return header;
   }
-  
+
   const banner = document.querySelector('[role="banner"]');
   if (banner) {
     const buttonsContainer = banner.querySelector('div[class*="button"], div[class*="toolbar"]');
@@ -95,7 +119,7 @@ function findToolbar() {
   // Generic fallback toolbar class selectors
   const driveToolbar = document.querySelector('.nd-toolbar, .drive-viewer-toolbar');
   if (driveToolbar) return driveToolbar;
-  
+
   return null;
 }
 
@@ -103,7 +127,7 @@ function findContentArea() {
   // Primary container: div.a-b-r > div > div
   const container = document.querySelector('div.a-b-r > div > div');
   if (container) return container;
-  
+
   // Secondary fallback: Direct child of main viewer div.a-b-r
   const mainViewer = document.querySelector('div.a-b-r');
   if (mainViewer) {
@@ -115,7 +139,7 @@ function findContentArea() {
     }
     return mainViewer;
   }
-  
+
   // Tertiary: general viewer body selectors
   const viewerContainer = document.querySelector('[class*="viewer-content"], [class*="viewer-body"], .nd-viewer-body');
   if (viewerContainer) return viewerContainer;
@@ -133,28 +157,28 @@ async function acquireContent() {
     console.log("Drive Markdown Viewer: Scraped content from <pre> tags");
     return text;
   }
-  
+
   // Priority 2: Text page container classes
   text = scrapeTextPages();
   if (text) {
     console.log("Drive Markdown Viewer: Scraped content from text page container");
     return text;
   }
-  
+
   // Priority 3: style attributes indicating white-space
   text = scrapeWhiteSpaceDivs();
   if (text) {
     console.log("Drive Markdown Viewer: Scraped content from white-space style divs");
     return text;
   }
-  
+
   // Priority 4: Background Service Worker direct download fetch
   text = await fetchFromBackground();
   if (text) {
     console.log("Drive Markdown Viewer: Acquired content via Background Fetch");
     return text;
   }
-  
+
   return null;
 }
 
@@ -166,7 +190,7 @@ function scrapePreElements() {
     '.drive-viewer-text-content pre',
     'pre'
   ];
-  
+
   for (const selector of selectors) {
     const elements = document.querySelectorAll(selector);
     if (elements.length > 0) {
@@ -189,7 +213,7 @@ function scrapeTextPages() {
     '[id*="text-page"]',
     '.drive-viewer-text-page'
   ];
-  
+
   for (const selector of selectors) {
     const elements = document.querySelectorAll(selector);
     if (elements.length > 0) {
@@ -226,12 +250,21 @@ function scrapeWhiteSpaceDivs() {
 
 async function fetchFromBackground() {
   const url = window.location.href;
-  const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (!match) {
+  let fileId = null;
+
+  const matchD = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (matchD) {
+    fileId = matchD[1];
+  } else {
+    const matchPreview = url.match(/[?&]preview=([a-zA-Z0-9_-]+)/);
+    if (matchPreview) {
+      fileId = matchPreview[1];
+    }
+  }
+
+  if (!fileId) {
     return null;
   }
-  
-  const fileId = match[1];
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ action: "fetchContent", fileId: fileId }, (response) => {
       if (chrome.runtime.lastError) {
@@ -260,7 +293,7 @@ function acquireFileName() {
         return el.textContent.trim();
       }
     }
-    
+
     const ariaLabels = banner.querySelectorAll('[aria-label]');
     for (const el of ariaLabels) {
       const label = el.getAttribute('aria-label');
@@ -285,7 +318,7 @@ function acquireFileName() {
     docTitle = docTitle.replace(/ - Google (ドキュメント|Docs)/i, '');
     return docTitle.trim();
   }
-  
+
   return 'Markdown File';
 }
 
@@ -303,24 +336,24 @@ function toggleMarkdownView() {
 async function activateMarkdownView() {
   const btn = document.getElementById('md-toggle-button');
   if (!btn) return;
-  
+
   // Transition button to loading state
   btn.className = 'md-toggle-btn loading';
   const btnText = btn.querySelector('.btn-text');
   if (btnText) btnText.textContent = '読み込み中…';
-  
+
   if (!btn.querySelector('.md-btn-spinner')) {
     const spinner = document.createElement('div');
     spinner.className = 'md-btn-spinner';
     btn.insertBefore(spinner, btn.firstChild);
   }
-  
+
   try {
     const rawContent = await acquireContent();
     if (!rawContent) {
       throw new Error("ファイルの内容を取得できませんでした。Driveプレビューにテキストが表示されていることを確認してください。");
     }
-    
+
     // Parse Markdown
     let renderedHtml = '';
     if (typeof marked !== 'undefined' && typeof marked.parse === 'function') {
@@ -333,44 +366,44 @@ async function activateMarkdownView() {
       console.warn("marked.js not available, utilizing basic fallback parser");
       renderedHtml = fallbackMarkdownParser(rawContent);
     }
-    
+
     // Sanitize HTML
     if (typeof DOMPurify !== 'undefined' && typeof DOMPurify.sanitize === 'function') {
       renderedHtml = DOMPurify.sanitize(renderedHtml);
     } else {
       console.warn("DOMPurify not available, skipping HTML sanitization");
     }
-    
+
     // Layout and Display Selection
     const contentArea = findContentArea();
     const fileName = acquireFileName();
-    
+
     if (contentArea) {
       displayInline(contentArea, renderedHtml);
     } else {
       displayOverlay(fileName, renderedHtml);
     }
-    
+
     // Highlight Code Syntax
     applySyntaxHighlighting();
-    
+
     // Toggle active state on button
     btn.className = 'md-toggle-btn active';
     if (btnText) btnText.textContent = '元に戻す';
     const spinner = btn.querySelector('.md-btn-spinner');
     if (spinner) spinner.remove();
-    
+
     isMarkdownActive = true;
-    
+
   } catch (error) {
     console.error("Drive Markdown Viewer Toggle Error:", error);
     showErrorMessage(error.message);
-    
+
     btn.className = 'md-toggle-btn';
     if (btnText) btnText.textContent = 'エラー';
     const spinner = btn.querySelector('.md-btn-spinner');
     if (spinner) spinner.remove();
-    
+
     // Return button state after 4 seconds
     setTimeout(() => {
       if (btn.querySelector('.btn-text') && btn.querySelector('.btn-text').textContent === 'エラー') {
@@ -389,7 +422,7 @@ function restoreOriginalView() {
     const spinner = btn.querySelector('.md-btn-spinner');
     if (spinner) spinner.remove();
   }
-  
+
   // 1. Re-display hidden children in contentArea
   if (originalChildrenStates.length > 0) {
     originalChildrenStates.forEach(state => {
@@ -399,13 +432,13 @@ function restoreOriginalView() {
     });
     originalChildrenStates = [];
   }
-  
+
   // 2. Remove inline viewer
   if (inlineViewerElement) {
     inlineViewerElement.remove();
     inlineViewerElement = null;
   }
-  
+
   // 3. Remove overlay viewer
   if (overlayViewerElement) {
     overlayViewerElement.classList.remove('fade-in');
@@ -416,7 +449,7 @@ function restoreOriginalView() {
       }
     }, 300);
   }
-  
+
   isMarkdownActive = false;
   document.removeEventListener('keydown', handleOverlayEsc);
 }
@@ -428,24 +461,24 @@ function displayInline(contentArea, renderedHtml) {
   originalChildrenStates = [];
   Array.from(contentArea.children).forEach(child => {
     if (child.classList.contains('md-viewer-inline')) return;
-    
+
     originalChildrenStates.push({
       element: child,
       originalDisplay: child.style.display
     });
     child.style.display = 'none';
   });
-  
+
   inlineViewerElement = document.createElement('div');
   inlineViewerElement.className = 'md-viewer-inline';
-  
+
   const contentWrap = document.createElement('div');
   contentWrap.className = 'md-viewer-content md-rendered';
   contentWrap.innerHTML = renderedHtml;
-  
+
   inlineViewerElement.appendChild(contentWrap);
   contentArea.appendChild(inlineViewerElement);
-  
+
   requestAnimationFrame(() => {
     if (inlineViewerElement) inlineViewerElement.classList.add('fade-in');
   });
@@ -455,10 +488,10 @@ function displayOverlay(fileName, renderedHtml) {
   if (overlayViewerElement) {
     overlayViewerElement.remove();
   }
-  
+
   overlayViewerElement = document.createElement('div');
   overlayViewerElement.className = 'md-viewer-overlay';
-  
+
   overlayViewerElement.innerHTML = `
     <div class="md-viewer-overlay-card">
       <div class="md-viewer-overlay-header">
@@ -474,12 +507,12 @@ function displayOverlay(fileName, renderedHtml) {
       </div>
     </div>
   `;
-  
+
   document.body.appendChild(overlayViewerElement);
-  
+
   document.getElementById('md-overlay-close').addEventListener('click', restoreOriginalView);
   document.addEventListener('keydown', handleOverlayEsc);
-  
+
   requestAnimationFrame(() => {
     if (overlayViewerElement) overlayViewerElement.classList.add('fade-in');
   });
@@ -502,7 +535,7 @@ function showErrorMessage(message) {
       <div class="md-error-msg">${escapeHtml(message)}</div>
     </div>
   `;
-  
+
   if (contentArea) {
     displayInline(contentArea, errorHtml);
   } else {
@@ -545,7 +578,7 @@ function fallbackMarkdownParser(text) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
-  
+
   // Headers h1 - h6
   html = html.replace(/^###### (.*$)/gim, '<h6>$1</h6>');
   html = html.replace(/^##### (.*$)/gim, '<h5>$1</h5>');
@@ -553,17 +586,17 @@ function fallbackMarkdownParser(text) {
   html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
   html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
   html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-  
+
   // Bold, Italic
   html = html.replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>');
   html = html.replace(/\*(.*)\*/gim, '<em>$1</em>');
-  
+
   // Links
   html = html.replace(/\[(.*?)\]\((.*?)\)/gim, '<a href="$2" target="_blank">$1</a>');
-  
+
   // Inline code
   html = html.replace(/`(.*?)`/gim, '<code>$1</code>');
-  
+
   // Linebreaks and basic paragraphs
   html = html.split('\n\n').map(p => {
     if (p.trim().startsWith('<h') || p.trim().startsWith('<pre') || p.trim().startsWith('<ul') || p.trim().startsWith('<ol')) {
@@ -571,7 +604,7 @@ function fallbackMarkdownParser(text) {
     }
     return `<p>${p.replace(/\n/g, '<br>')}</p>`;
   }).join('\n');
-  
+
   return html;
 }
 
@@ -580,7 +613,7 @@ function fallbackMarkdownParser(text) {
 // ==========================================
 function injectButton() {
   if (isButtonInjected) return;
-  
+
   // If button already exists in page (e.g. from previous checks), avoid duplicates
   if (document.getElementById('md-toggle-button')) {
     isButtonInjected = true;
@@ -589,7 +622,7 @@ function injectButton() {
 
   const toolbar = findToolbar();
   if (!toolbar) return;
-  
+
   const btn = document.createElement('button');
   btn.className = 'md-toggle-btn';
   btn.id = 'md-toggle-button';
@@ -599,9 +632,9 @@ function injectButton() {
     </svg>
     <span class="btn-text">MD</span>
   `;
-  
+
   btn.addEventListener('click', toggleMarkdownView);
-  
+
   // Attempt to insert near the "Open with" button, otherwise insert at the end
   const openWithBtn = toolbar.querySelector('[data-tooltip*="開く"], [data-tooltip*="Open with"], [data-tooltip*="アプリで開く"], [aria-label*="開く"], [aria-label*="Open with"]');
   if (openWithBtn) {
@@ -609,39 +642,39 @@ function injectButton() {
   } else {
     toolbar.appendChild(btn);
   }
-  
+
   isButtonInjected = true;
   console.log("Drive Markdown Viewer: Toggle button successfully injected.");
 }
 
 function startObserver() {
-  if (!isPreviewPage()) return;
-  
+  if (!isDrivePage()) return;
+
   // Attempt to inject immediately
   injectButton();
-  
+
   if (document.getElementById('md-toggle-button')) {
     return; // Already injected
   }
-  
+
   observer = new MutationObserver(() => {
     if (document.getElementById('md-toggle-button')) {
       cleanupObserver();
       return;
     }
-    
+
     const toolbar = findToolbar();
     if (toolbar) {
       injectButton();
       cleanupObserver();
     }
   });
-  
+
   observer.observe(document.body, {
     childList: true,
     subtree: true
   });
-  
+
   timeoutId = setTimeout(() => {
     cleanupObserver();
     console.log("Drive Markdown Viewer: Observer timeout reached. Stopped watching.");
@@ -663,8 +696,33 @@ function cleanupObserver() {
 setInterval(checkUrlChange, 1000);
 window.addEventListener('popstate', checkUrlChange);
 
-// Run initial execution if matched
-if (isPreviewPage()) {
+// Setup event listeners for user interaction to restart the observer
+window.addEventListener('click', (e) => {
+  const target = e.target;
+  if (!target) return;
+
+  // Check if click is likely to trigger a preview
+  const isRowClick = target.closest('[role="row"], [role="gridcell"], [role="listitem"]');
+  const isButtonClick = target.closest('button, [role="button"], [data-tooltip], [aria-label]');
+  const isMenuItem = target.closest('[role="menuitem"]');
+
+  if (isRowClick || isButtonClick || isMenuItem) {
+    restartObserver();
+  }
+});
+
+window.addEventListener('dblclick', () => {
+  restartObserver();
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    restartObserver();
+  }
+});
+
+// Run initial execution if on Drive
+if (isDrivePage()) {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startObserver);
   } else {
