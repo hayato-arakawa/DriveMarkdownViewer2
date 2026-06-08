@@ -17,8 +17,7 @@ function isPreviewPage() {
   const url = window.location.href;
   const isPreviewUrl = url.includes('/file/d/') && (url.includes('/view') || url.includes('/edit') || url.match(/\/file\/d\/[a-zA-Z0-9_-]+$/));
 
-  const isPreviewDomPresent = !!document.querySelector('div.a-b-r') ||
-    !!document.querySelector('body > div.YM5U3.dif24c.vhoiae.LgGVmb.bvmRsc.YLZndc.XHt2ke.a-b-uoC0bf.a-b-L.a-b-ja-el-db.cwJVQd > span > span > div.xWSG7 > div.gDCm5 > div > div > div.rWIAq');
+  const isPreviewDomPresent = !!document.querySelector('div.a-b-K[role="toolbar"]');
 
   return isPreviewUrl || isPreviewDomPresent;
 }
@@ -86,9 +85,9 @@ function hardCleanup() {
 // DOM Selectors for Toolbar & Scraping
 // ==========================================
 function findToolbar() {
-  // Custom target selector for folder pages
-  const customTarget = document.querySelector("div.rWIAq");
-  if (customTarget) return customTarget;
+  // Priority 0: Preview toolbar
+  const previewToolbar = document.querySelector('div.a-b-K[role="toolbar"]');
+  if (previewToolbar) return previewToolbar;
 
   // Selector Priority 1: Parent or sibling of "Open with" / "アプリで開く" / "開く"
   const openWithBtn = document.querySelector('[data-tooltip*="開く"], [data-tooltip*="Open with"], [data-tooltip*="アプリで開く"], [aria-label*="開く"], [aria-label*="Open with"]');
@@ -96,6 +95,10 @@ function findToolbar() {
     const parent = openWithBtn.parentElement;
     if (parent) return parent;
   }
+
+  // Custom target selector for folder pages
+  const customTarget = document.querySelector("div.rWIAq");
+  if (customTarget) return customTarget;
 
   // Selector Priority 2: Toolbar role elements
   const toolbar = document.querySelector('[role="toolbar"]');
@@ -123,7 +126,26 @@ function findToolbar() {
   return null;
 }
 
+function findActiveDocument() {
+  const docs = Array.from(document.querySelectorAll('[role="document"]'));
+  return docs.find(doc => {
+    let el = doc;
+    while (el && el !== document.body) {
+      if (window.getComputedStyle(el).display === 'none') {
+        return false;
+      }
+      el = el.parentElement;
+    }
+    return true;
+  });
+}
+
 function findContentArea() {
+  const activeDoc = findActiveDocument();
+  if (activeDoc) {
+    return activeDoc.parentElement;
+  }
+
   // Primary container: div.a-b-r > div > div
   const container = document.querySelector('div.a-b-r > div > div');
   if (container) return container;
@@ -183,16 +205,16 @@ async function acquireContent() {
 }
 
 function scrapePreElements() {
+  const activeDoc = findActiveDocument();
+  if (!activeDoc) return null;
+
   const selectors = [
     'pre[role="presentation"]',
-    'div[class*="viewer"] pre',
-    'div.a-b-r pre',
-    '.drive-viewer-text-content pre',
     'pre'
   ];
 
   for (const selector of selectors) {
-    const elements = document.querySelectorAll(selector);
+    const elements = activeDoc.querySelectorAll(selector);
     if (elements.length > 0) {
       const parts = [];
       elements.forEach(el => {
@@ -208,6 +230,9 @@ function scrapePreElements() {
 }
 
 function scrapeTextPages() {
+  const activeDoc = findActiveDocument();
+  if (!activeDoc) return null;
+
   const selectors = [
     '[class*="text-page"]',
     '[id*="text-page"]',
@@ -215,7 +240,7 @@ function scrapeTextPages() {
   ];
 
   for (const selector of selectors) {
-    const elements = document.querySelectorAll(selector);
+    const elements = activeDoc.querySelectorAll(selector);
     if (elements.length > 0) {
       const parts = [];
       elements.forEach(el => {
@@ -231,7 +256,10 @@ function scrapeTextPages() {
 }
 
 function scrapeWhiteSpaceDivs() {
-  const elements = document.querySelectorAll('div[style*="white-space"]');
+  const activeDoc = findActiveDocument();
+  if (!activeDoc) return null;
+
+  const elements = activeDoc.querySelectorAll('div[style*="white-space"]');
   if (elements.length > 0) {
     const parts = [];
     elements.forEach(el => {
@@ -284,6 +312,18 @@ async function fetchFromBackground() {
 // Filename Scraping
 // ==========================================
 function acquireFileName() {
+  // Priority 0: Active document's aria-label
+  const activeDoc = findActiveDocument();
+  if (activeDoc) {
+    const label = activeDoc.getAttribute('aria-label');
+    if (label) {
+      const match = label.match(/「([^」]+)」/);
+      if (match) {
+        return match[1];
+      }
+    }
+  }
+
   // Priority 1: Title in role="banner"
   const banner = document.querySelector('[role="banner"]');
   if (banner) {
@@ -428,6 +468,7 @@ function restoreOriginalView() {
     originalChildrenStates.forEach(state => {
       if (state.element) {
         state.element.style.display = state.originalDisplay;
+        state.element.style.visibility = state.originalVisibility;
       }
     });
     originalChildrenStates = [];
@@ -464,13 +505,15 @@ function displayInline(contentArea, renderedHtml) {
 
     originalChildrenStates.push({
       element: child,
-      originalDisplay: child.style.display
+      originalDisplay: child.style.display,
+      originalVisibility: child.style.visibility
     });
-    child.style.display = 'none';
+    child.style.visibility = 'hidden';
   });
 
   inlineViewerElement = document.createElement('div');
   inlineViewerElement.className = 'md-viewer-inline';
+  inlineViewerElement.style.visibility = 'visible';
 
   const contentWrap = document.createElement('div');
   contentWrap.className = 'md-viewer-content md-rendered';
@@ -612,13 +655,12 @@ function fallbackMarkdownParser(text) {
 // Button Injection Logic with Observer
 // ==========================================
 function injectButton() {
-  if (isButtonInjected) return;
-
   // If button already exists in page (e.g. from previous checks), avoid duplicates
   if (document.getElementById('md-toggle-button')) {
-    isButtonInjected = true;
     return;
   }
+
+  if (!isPreviewPage()) return;
 
   const toolbar = findToolbar();
   if (!toolbar) return;
@@ -636,14 +678,19 @@ function injectButton() {
   btn.addEventListener('click', toggleMarkdownView);
 
   // Attempt to insert near the "Open with" button, otherwise insert at the end
-  const openWithBtn = toolbar.querySelector('[data-tooltip*="開く"], [data-tooltip*="Open with"], [data-tooltip*="アプリで開く"], [aria-label*="開く"], [aria-label*="Open with"]');
+  const openWithBtn = toolbar.querySelector('[data-tooltip="アプリで開く"], [data-tooltip="Open with"], [aria-label="アプリで開く"], [aria-label="Open with"]');
   if (openWithBtn) {
-    toolbar.insertBefore(btn, openWithBtn.nextSibling);
+    openWithBtn.parentElement.insertBefore(btn, openWithBtn.nextSibling);
   } else {
-    toolbar.appendChild(btn);
+    // Find "Google ドキュメントで開く" or similar by text content as fallback (searching descendants)
+    const docsBtn = Array.from(toolbar.querySelectorAll('[role="button"], div, button')).find(el => el.textContent.includes('Google ドキュメント') || el.textContent.includes('Google Docs') || el.textContent.includes('Open with Google Docs'));
+    if (docsBtn) {
+      docsBtn.parentElement.insertBefore(btn, docsBtn.nextSibling);
+    } else {
+      toolbar.appendChild(btn);
+    }
   }
 
-  isButtonInjected = true;
   console.log("Drive Markdown Viewer: Toggle button successfully injected.");
 }
 
@@ -663,10 +710,14 @@ function startObserver() {
       return;
     }
 
-    const toolbar = findToolbar();
-    if (toolbar) {
-      injectButton();
-      cleanupObserver();
+    if (isPreviewPage()) {
+      const toolbar = findToolbar();
+      if (toolbar) {
+        injectButton();
+        if (document.getElementById('md-toggle-button')) {
+          cleanupObserver();
+        }
+      }
     }
   });
 
